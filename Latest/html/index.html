@@ -1,1 +1,408 @@
-Code here
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FlexBreeze Control</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            font-family: Arial, sans-serif;
+            background: #f3f5f7;
+            color: #1f2933;
+        }
+
+        .card {
+            width: 100%;
+            max-width: 380px;
+            padding: 22px;
+            background: #ffff;
+            border: 1px solid #d7dde3;
+            border-radius: 12px;
+        }
+
+        .header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .title-block {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 20px;
+        }
+
+        /* Firmware version sits directly under the title.
+           Same size and weight as the READY indicator. */
+        .version-display {
+            font-size: 11px;
+            font-weight: bold;
+            color: #64748b;
+            white-space: nowrap;
+        }
+
+        .status {
+            font-size: 11px;
+            font-weight: bold;
+            color: #16803c;
+            white-space: nowrap;
+            padding-top: 4px;
+        }
+
+        .label {
+            margin: 20px 0 7px;
+            font-size: 11px;
+            font-weight: bold;
+            color: #64748b;
+            letter-spacing: 0.5px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            min-height: 42px;
+            border: 1px solid #cbd5e1;
+            border-radius: 7px;
+            padding: 10px 12px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            background: #f8fafc;
+            color: #334155;
+        }
+
+        button.active {
+            border-color: #1676c7;
+            background: #1976d2;
+            color: #ffff;
+        }
+
+        .button-group button {
+            flex: 1;
+        }
+
+        .angle-display,
+        .speed-display {
+            margin: 7px 0;
+            text-align: center;
+            font-size: 27px;
+            font-weight: bold;
+        }
+
+        .speed-display small {
+            font-size: 13px;
+            font-weight: normal;
+            color: #64748b;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            margin: 8px 0;
+            accent-color: #1976d2;
+        }
+
+        .range-labels {
+            display: flex;
+            justify-content: space-between;
+            margin-top: -2px;
+            font-size: 11px;
+            color: #64748b;
+        }
+
+        .move-button {
+            width: 100%;
+            margin-top: 19px;
+            border: none;
+            background: #1f3a54;
+            color: #ffff;
+        }
+
+        .move-button:active {
+            background: #162a3d;
+        }
+
+        .move-button:disabled {
+            background: #7a909f;
+            cursor: default;
+        }
+
+        #oscillateMessage {
+            display: none;
+            margin-top: 22px;
+            padding: 18px 12px;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            background: #eff6ff;
+            color: #1d4f85;
+            text-align: center;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        /* Update result line — sits directly below the Check Update button. */
+        .update-result {
+            min-height: 18px;
+            margin: 10px 0 0;
+            text-align: center;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        .error {
+            min-height: 18px;
+            margin: 12px 0 0;
+            color: #b42318;
+            text-align: center;
+            font-size: 12px;
+        }
+    </style>
+</head>
+
+<body>
+    <main class="card">
+        <div class="header">
+            <div class="title-block">
+                <h1>FlexBreeze Control</h1>
+                <span class="version-display" id="versionDisplay">v1.0.0</span>
+            </div>
+            <span class="status">● READY</span>
+        </div>
+
+        <div class="label">Operation Mode</div>
+
+        <div class="button-group">
+            <button id="manualButton" class="active" onclick="setMode('manual')">
+                Manual
+            </button>
+
+            <button id="oscillateButton" onclick="setMode('oscillate')">
+                Oscillate
+            </button>
+        </div>
+
+        <div class="label">Movement Speed</div>
+
+        <div class="speed-display">
+            <span id="speedValue">6</span><small> / 10</small>
+        </div>
+
+        <input
+            id="speedSlider"
+            type="range"
+            min="1"
+            max="10"
+            value="6"
+            oninput="updateSpeedDisplay(this.value)"
+            onchange="sendSpeed()"
+        >
+
+        <div class="range-labels">
+            <span>Slow</span>
+            <span>Fast</span>
+        </div>
+
+        <section id="manualControls">
+            <div class="label">Target Position</div>
+
+            <div class="angle-display">
+                <span id="angleValue">90</span>°
+            </div>
+
+            <input
+                id="angleSlider"
+                type="range"
+                min="0"
+                max="180"
+                value="90"
+                oninput="updateAngleDisplay(this.value)"
+            >
+
+            <div class="range-labels">
+                <span>0°</span>
+                <span>180°</span>
+            </div>
+
+            <button id="moveButton" class="move-button" onclick="sendMove()">
+                MOVE &amp; HOLD AT 90°
+            </button>
+        </section>
+
+        <section id="oscillateMessage">
+            <strong>Oscillation active</strong><br>
+            Moving continuously between 0° and 90°.
+        </section>
+
+        <!-- Check Update — always visible regardless of mode. -->
+        <button
+            id="checkUpdateButton"
+            class="move-button"
+            onclick="checkUpdate()"
+        >
+            CHECK FOR UPDATE
+        </button>
+
+        <p id="updateResult" class="update-result"></p>
+
+        <p id="errorMessage" class="error"></p>
+    </main>
+
+    <script>
+        let speedTimer = null;
+
+        function showError(message) {
+            document.getElementById("errorMessage").textContent = message;
+        }
+
+        function sendRequest(url) {
+            fetch(url, { cache: "no-store" })
+                .then(function(response) {
+                    if (!response.ok) {
+                        throw new Error("Request failed");
+                    }
+
+                    showError("");
+                })
+                .catch(function() {
+                    showError("Connection lost. Reconnect to FlexBreezeOss.");
+                });
+        }
+
+        function updateAngleDisplay(value) {
+            document.getElementById("angleValue").textContent = value;
+            document.getElementById("moveButton").textContent =
+                "MOVE & HOLD AT " + value + "\u00b0";
+        }
+
+        function updateSpeedDisplay(value) {
+            document.getElementById("speedValue").textContent = value;
+
+            /*
+             * Send the speed 250 ms after the user stops moving the slider.
+             * This avoids sending a web request for every slider increment.
+             */
+            clearTimeout(speedTimer);
+
+            speedTimer = setTimeout(function() {
+                sendSpeed();
+            }, 250);
+        }
+
+        function setMode(mode) {
+            const oscillating = mode === "oscillate";
+
+            document.getElementById("manualButton").className =
+                oscillating ? "" : "active";
+
+            document.getElementById("oscillateButton").className =
+                oscillating ? "active" : "";
+
+            document.getElementById("manualControls").style.display =
+                oscillating ? "none" : "block";
+
+            document.getElementById("oscillateMessage").style.display =
+                oscillating ? "block" : "none";
+
+            sendRequest("/mode?osc=" + oscillating);
+        }
+
+        function sendMove() {
+            const angle = document.getElementById("angleSlider").value;
+            sendRequest("/move?pos=" + angle);
+        }
+
+        function sendSpeed() {
+            const speed = document.getElementById("speedSlider").value;
+            sendRequest("/speed?value=" + speed);
+        }
+
+        /*
+         * Check for a firmware update.
+         *
+         * Step 1 — fetch the current version from the Pico (/version).
+         * Step 2 — fetch the latest version from GitHub via the phone's
+         *          mobile data (raw.githubusercontent.com).
+         * Step 3 — compare and show the result.
+         *
+         * Note: the phone must have mobile data active. When connected to
+         * the Pico's Wi-Fi, iOS (Wi-Fi Assist) and Android (Smart Network
+         * Switch) will route the GitHub request over cellular automatically.
+         */
+        function checkUpdate() {
+            const btn    = document.getElementById("checkUpdateButton");
+            const result = document.getElementById("updateResult");
+
+            btn.disabled    = true;
+            btn.textContent = "CHECKING\u2026";
+            result.textContent  = "";
+            result.style.color  = "#64748b";
+
+            const GITHUB_VERSION_URL =
+                "https://raw.githubusercontent.com/Pagem02/FlexBreeze/main/Latest/version.txt";
+
+            fetch("/version", { cache: "no-store" })
+                .then(function(resp) {
+                    if (!resp.ok) { throw new Error("version endpoint error"); }
+                    return resp.json();
+                })
+                .then(function(data) {
+                    const current = data.version;
+
+                    // Update the version badge at the top of the page.
+                    document.getElementById("versionDisplay").textContent =
+                        "v" + current;
+
+                    return fetch(GITHUB_VERSION_URL, { cache: "no-store" })
+                        .then(function(ghResp) {
+                            if (!ghResp.ok) { throw new Error("github fetch error"); }
+                            return ghResp.text();
+                        })
+                        .then(function(text) {
+                            return { current: current, latest: text.trim() };
+                        });
+                })
+                .then(function(versions) {
+                    if (versions.current === versions.latest) {
+                        result.textContent = "\u2713 Firmware is up to date (v" + versions.current + ")";
+                        result.style.color = "#16803c";
+                    } else {
+                        result.textContent =
+                            "Update available: v" + versions.latest +
+                            "  (installed: v" + versions.current + ")";
+                        result.style.color = "#b45309";
+                    }
+                })
+                .catch(function() {
+                    result.textContent = "Check failed \u2014 ensure mobile data is active.";
+                    result.style.color = "#b42318";
+                })
+                .finally(function() {
+                    btn.disabled    = false;
+                    btn.textContent = "CHECK FOR UPDATE";
+                });
+        }
+    </script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"f0f03d0605bf45f1a3b17cf7d5e6861f"}' crossorigin="anonymous"></script>
+</body>
+</html>
