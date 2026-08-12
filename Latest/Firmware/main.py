@@ -292,11 +292,31 @@ def run_update_check():
     Connect to saved home Wi-Fi (STA mode) while keeping the Pico AP active,
     fetch update.json from GitHub, then disconnect.
 
-    During the connection wait the motor and DNS/web handlers are kept
-    running so the phone stays responsive. The brief HTTPS fetch (~3-5 s)
-    is the only window where the main loop is fully blocked.
+    Robustness features:
+    - STA interface is fully torn down and restarted before each attempt so
+      stale state from a previous failed connect cannot block a new one.
+    - Status is polled every 100 ms; definitive failures (wrong password,
+      AP not found) cause an early exit rather than waiting out the full
+      timeout — giving a specific, helpful error message straight away.
+    - Up to MAX_ATTEMPTS connection attempts are made before giving up.
+    - Motor, DNS, and web handlers run during every wait loop so the phone
+      stays connected to the AP and the UI stays responsive throughout.
+    - The HTTPS fetch timeout is generous to allow for a slow DNS lookup,
+      TLS handshake, and data transfer over a loaded home router.
     """
     global update_state, update_result
+
+    # MicroPython Pico W STA status codes.
+    STAT_GOT_IP        =  3
+    STAT_CONNECTING    =  1
+    STAT_IDLE          =  0
+    STAT_CONNECT_FAIL  = -1
+    STAT_NO_AP_FOUND   = -2
+    STAT_WRONG_PASS    = -3
+
+    # Two attempts, 25 seconds each.  Total worst-case wait = ~52 seconds.
+    MAX_ATTEMPTS      = 2
+    CONNECT_TIMEOUT_S = 25
 
     sta = network.WLAN(network.STA_IF)
 
@@ -310,44 +330,98 @@ def run_update_check():
         password = config.get("password", "")
 
         update_state = "connecting"
+        connected    = False
 
-        sta.active(True)
-        if sta.isconnected():
-            sta.disconnect()
-            time.sleep_ms(300)
+        for attempt in range(1, MAX_ATTEMPTS + 1):
 
-        sta.connect(ssid, password)
+            # ---- Full STA reset before each attempt ----
+            # Ensures no stale connection state carries over.
+            try:
+                if sta.isconnected():
+                    sta.disconnect()
+                    time.sleep_ms(500)
+                sta.active(False)
+                time.sleep_ms(400)
+            except:
+                pass
 
-        # Wait up to 15 s for connection.
-        # Motor, DNS, and web requests are all served during the wait so
-        # the phone stays connected to the AP and the UI stays responsive.
-        connected = False
-        for _ in range(150):
-            motor_update()
-            handle_dns()
-            handle_web_request()
-            if sta.isconnected():
-                connected = True
+            sta.active(True)
+            time.sleep_ms(500)   # Let the radio settle after activation.
+
+            sta.connect(ssid, password)
+
+            # ---- Wait loop — up to CONNECT_TIMEOUT_S seconds ----
+            deadline = time.ticks_add(time.ticks_ms(), CONNECT_TIMEOUT_S * 1000)
+            last_status = STAT_CONNECTING
+
+            while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+                motor_update()
+                handle_dns()
+                handle_web_request()
+
+                if sta.isconnected():
+                    connected   = True
+                    last_status = STAT_GOT_IP
+                    break
+
+                last_status = sta.status()
+
+                # Definitive failures — the driver already gave up.
+                # No point running out the full timeout.
+                if last_status in (STAT_WRONG_PASS,
+                                   STAT_NO_AP_FOUND,
+                                   STAT_CONNECT_FAIL):
+                    break
+
+                time.sleep_ms(100)
+
+            if connected:
                 break
-            time.sleep_ms(100)
 
-        if not connected:
-            update_state  = "error"
-            update_result = {"message": "Could not connect to \"" + ssid + "\". Check the password."}
-            return
+            # ---- Build a helpful message for the last failed attempt ----
+            if attempt == MAX_ATTEMPTS:
+                if last_status == STAT_WRONG_PASS:
+                    msg = (
+                        "Wrong password for \"" + ssid + "\". "
+                        "Please re-enter your Wi-Fi password and try again."
+                    )
+                elif last_status == STAT_NO_AP_FOUND:
+                    msg = (
+                        "Network \"" + ssid + "\" not found. "
+                        "Move FlexBreeze closer to your router and try again."
+                    )
+                elif last_status == STAT_CONNECT_FAIL:
+                    msg = (
+                        "Connection to \"" + ssid + "\" failed. "
+                        "Check your router is working and try again."
+                    )
+                else:
+                    msg = (
+                        "Could not connect to \"" + ssid + "\" "
+                        "after " + str(MAX_ATTEMPTS) + " attempts. "
+                        "Check the password or move closer to your router."
+                    )
+                update_state  = "error"
+                update_result = {"message": msg}
+                return
 
+            # Brief pause before retrying.
+            time.sleep_ms(1000)
+
+        # ---- Fetch update.json from GitHub ----
         update_state = "fetching"
         gc.collect()
 
-        # The Pico now has internet via STA while the phone stays on the AP.
         try:
             import urequests
         except ImportError:
             import requests as urequests
 
+        # Generous timeout: allows for slow DNS, TLS handshake, and
+        # data transfer on a loaded home network.
         resp = urequests.get(
             "https://raw.githubusercontent.com/Pagem02/FlexBreeze/main/Latest/update.json",
-            timeout=10
+            timeout=20
         )
         data = resp.json()
         resp.close()
@@ -365,6 +439,7 @@ def run_update_check():
         update_result = {"message": str(exc)}
 
     finally:
+        # Always fully tear down STA so the AP is the only active interface.
         try:
             sta.disconnect()
         except:
