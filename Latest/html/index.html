@@ -391,16 +391,28 @@
             }, 2000);
         }
 
+        // Track how many "connecting" polls we have seen so we can tell
+        // the user a retry is happening (each attempt is up to 25 s).
+        var connectingPollCount = 0;
+
         function handleUpdateState(data) {
             var state  = data.state;
             var result = data.result || {};
 
             if (state === "connecting") {
-                setUpdateResult("Connecting to Wi-Fi\u2026", "#64748b");
+                connectingPollCount += 1;
+                // After ~27 s of polling (poll every 2 s) the first attempt
+                // has almost certainly finished and a second is under way.
+                if (connectingPollCount > 13) {
+                    setUpdateResult("Retrying connection\u2026", "#64748b");
+                } else {
+                    setUpdateResult("Connecting to Wi-Fi\u2026", "#64748b");
+                }
                 return;   // keep polling
             }
 
             if (state === "fetching") {
+                connectingPollCount = 0;
                 setUpdateResult("Fetching update info\u2026", "#64748b");
                 return;   // keep polling
             }
@@ -451,6 +463,7 @@
 
         function checkUpdate() {
             setBusy(true);
+            connectingPollCount = 0;
             setUpdateResult("", "");
             showError("");
 
