@@ -6,9 +6,7 @@
     <title>FlexBreeze Control</title>
 
     <style>
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
         body {
             margin: 0;
@@ -26,11 +24,12 @@
             width: 100%;
             max-width: 380px;
             padding: 22px;
-            background: #ffff;
+            background: #fff;
             border: 1px solid #d7dde3;
             border-radius: 12px;
         }
 
+        /* ---- Header ---- */
         .header {
             display: flex;
             align-items: flex-start;
@@ -46,13 +45,8 @@
             gap: 3px;
         }
 
-        h1 {
-            margin: 0;
-            font-size: 20px;
-        }
+        h1 { margin: 0; font-size: 20px; }
 
-        /* Firmware version sits directly under the title.
-           Same size and weight as the READY indicator. */
         .version-display {
             font-size: 11px;
             font-weight: bold;
@@ -68,6 +62,7 @@
             padding-top: 4px;
         }
 
+        /* ---- Labels ---- */
         .label {
             margin: 20px 0 7px;
             font-size: 11px;
@@ -76,10 +71,8 @@
             letter-spacing: 0.5px;
         }
 
-        .button-group {
-            display: flex;
-            gap: 10px;
-        }
+        /* ---- Buttons ---- */
+        .button-group { display: flex; gap: 10px; }
 
         button {
             min-height: 42px;
@@ -96,13 +89,23 @@
         button.active {
             border-color: #1676c7;
             background: #1976d2;
-            color: #ffff;
+            color: #fff;
         }
 
-        .button-group button {
-            flex: 1;
+        .button-group button { flex: 1; }
+
+        .move-button {
+            width: 100%;
+            margin-top: 19px;
+            border: none;
+            background: #1f3a54;
+            color: #fff;
         }
 
+        .move-button:active  { background: #162a3d; }
+        .move-button:disabled { background: #7a909f; cursor: default; }
+
+        /* ---- Sliders ---- */
         .angle-display,
         .speed-display {
             margin: 7px 0;
@@ -131,23 +134,7 @@
             color: #64748b;
         }
 
-        .move-button {
-            width: 100%;
-            margin-top: 19px;
-            border: none;
-            background: #1f3a54;
-            color: #ffff;
-        }
-
-        .move-button:active {
-            background: #162a3d;
-        }
-
-        .move-button:disabled {
-            background: #7a909f;
-            cursor: default;
-        }
-
+        /* ---- Oscillate message ---- */
         #oscillateMessage {
             display: none;
             margin-top: 22px;
@@ -161,7 +148,7 @@
             line-height: 1.5;
         }
 
-        /* Update result line — sits directly below the Check Update button. */
+        /* ---- Update result line ---- */
         .update-result {
             min-height: 18px;
             margin: 10px 0 0;
@@ -170,6 +157,64 @@
             font-weight: bold;
         }
 
+        /* ---- Wi-Fi setup panel ---- */
+        #wifiSetup {
+            display: none;
+            margin-top: 16px;
+            padding: 16px;
+            border: 1px solid #d7dde3;
+            border-radius: 10px;
+            background: #f8fafc;
+        }
+
+        #wifiSetup .setup-hint {
+            margin: 0 0 4px;
+            font-size: 12px;
+            color: #64748b;
+            line-height: 1.4;
+        }
+
+        #wifiSetup select,
+        #wifiSetup input[type="password"] {
+            width: 100%;
+            min-height: 42px;
+            padding: 10px 12px;
+            margin-top: 2px;
+            border: 1px solid #cbd5e1;
+            border-radius: 7px;
+            font-size: 14px;
+            background: #fff;
+            color: #1f2933;
+            appearance: none;
+            -webkit-appearance: none;
+        }
+
+        #wifiSetup select {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%2364748b' d='M6 8L0 0h12z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
+        }
+
+        #wifiSetup .wifi-button {
+            width: 100%;
+            margin-top: 12px;
+            border: none;
+            background: #1f3a54;
+            color: #fff;
+            min-height: 42px;
+            border-radius: 7px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        #wifiSetup .wifi-button:disabled {
+            background: #7a909f;
+            cursor: default;
+        }
+
+        /* ---- General error line ---- */
         .error {
             min-height: 18px;
             margin: 12px 0 0;
@@ -182,112 +227,111 @@
 
 <body>
     <main class="card">
+
+        <!-- Header -->
         <div class="header">
             <div class="title-block">
                 <h1>FlexBreeze Control</h1>
                 <span class="version-display" id="versionDisplay">v1.0.0</span>
             </div>
-            <span class="status">● READY</span>
+            <span class="status">&#9679; READY</span>
         </div>
 
+        <!-- Operation mode -->
         <div class="label">Operation Mode</div>
-
         <div class="button-group">
-            <button id="manualButton" class="active" onclick="setMode('manual')">
-                Manual
-            </button>
-
-            <button id="oscillateButton" onclick="setMode('oscillate')">
-                Oscillate
-            </button>
+            <button id="manualButton" class="active" onclick="setMode('manual')">Manual</button>
+            <button id="oscillateButton" onclick="setMode('oscillate')">Oscillate</button>
         </div>
 
+        <!-- Speed -->
         <div class="label">Movement Speed</div>
-
         <div class="speed-display">
             <span id="speedValue">6</span><small> / 10</small>
         </div>
+        <input id="speedSlider" type="range" min="1" max="10" value="6"
+               oninput="updateSpeedDisplay(this.value)" onchange="sendSpeed()">
+        <div class="range-labels"><span>Slow</span><span>Fast</span></div>
 
-        <input
-            id="speedSlider"
-            type="range"
-            min="1"
-            max="10"
-            value="6"
-            oninput="updateSpeedDisplay(this.value)"
-            onchange="sendSpeed()"
-        >
-
-        <div class="range-labels">
-            <span>Slow</span>
-            <span>Fast</span>
-        </div>
-
+        <!-- Manual position controls -->
         <section id="manualControls">
             <div class="label">Target Position</div>
-
-            <div class="angle-display">
-                <span id="angleValue">90</span>°
-            </div>
-
-            <input
-                id="angleSlider"
-                type="range"
-                min="0"
-                max="180"
-                value="90"
-                oninput="updateAngleDisplay(this.value)"
-            >
-
-            <div class="range-labels">
-                <span>0°</span>
-                <span>180°</span>
-            </div>
-
+            <div class="angle-display"><span id="angleValue">90</span>&#176;</div>
+            <input id="angleSlider" type="range" min="0" max="180" value="90"
+                   oninput="updateAngleDisplay(this.value)">
+            <div class="range-labels"><span>0&#176;</span><span>180&#176;</span></div>
             <button id="moveButton" class="move-button" onclick="sendMove()">
-                MOVE &amp; HOLD AT 90°
+                MOVE &amp; HOLD AT 90&#176;
             </button>
         </section>
 
+        <!-- Oscillate active message -->
         <section id="oscillateMessage">
             <strong>Oscillation active</strong><br>
-            Moving continuously between 0° and 90°.
+            Moving continuously between 0&#176; and 90&#176;.
         </section>
 
-        <!-- Check Update — always visible regardless of mode. -->
-        <button
-            id="checkUpdateButton"
-            class="move-button"
-            onclick="checkUpdate()"
-        >
+        <!-- Check Update button — always visible -->
+        <button id="checkUpdateButton" class="move-button" onclick="checkUpdate()">
             CHECK FOR UPDATE
         </button>
 
+        <!-- Update result (status text or error) -->
         <p id="updateResult" class="update-result"></p>
+
+        <!-- Wi-Fi setup panel — shown when no credentials are saved -->
+        <div id="wifiSetup">
+            <div class="label" style="margin-top:0">Wi-Fi Required</div>
+            <p class="setup-hint">
+                The Pico needs your home Wi-Fi to reach GitHub.<br>
+                Credentials are saved and reused for future checks.
+            </p>
+
+            <div class="label">Network</div>
+            <select id="networkSelect">
+                <option value="">Scanning&hellip;</option>
+            </select>
+
+            <div class="label">Password</div>
+            <input id="wifiPassword" type="password" placeholder="Wi-Fi password"
+                   autocomplete="current-password">
+
+            <button id="connectButton" class="wifi-button" onclick="saveWifiAndCheck()">
+                CONNECT &amp; CHECK UPDATE
+            </button>
+        </div>
 
         <p id="errorMessage" class="error"></p>
     </main>
 
     <script>
-        let speedTimer = null;
+        var speedTimer   = null;
+        var pollTimer    = null;
 
-        function showError(message) {
-            document.getElementById("errorMessage").textContent = message;
+        /* ---- Helpers ---- */
+
+        function showError(msg) {
+            document.getElementById("errorMessage").textContent = msg;
+        }
+
+        function setUpdateResult(text, colour) {
+            var el = document.getElementById("updateResult");
+            el.textContent  = text;
+            el.style.color  = colour || "#64748b";
         }
 
         function sendRequest(url) {
             fetch(url, { cache: "no-store" })
-                .then(function(response) {
-                    if (!response.ok) {
-                        throw new Error("Request failed");
-                    }
-
+                .then(function(r) {
+                    if (!r.ok) throw new Error("failed");
                     showError("");
                 })
                 .catch(function() {
                     showError("Connection lost. Reconnect to FlexBreezeOss.");
                 });
         }
+
+        /* ---- Motor controls ---- */
 
         function updateAngleDisplay(value) {
             document.getElementById("angleValue").textContent = value;
@@ -297,111 +341,229 @@
 
         function updateSpeedDisplay(value) {
             document.getElementById("speedValue").textContent = value;
-
-            /*
-             * Send the speed 250 ms after the user stops moving the slider.
-             * This avoids sending a web request for every slider increment.
-             */
             clearTimeout(speedTimer);
-
-            speedTimer = setTimeout(function() {
-                sendSpeed();
-            }, 250);
+            speedTimer = setTimeout(sendSpeed, 250);
         }
 
         function setMode(mode) {
-            const oscillating = mode === "oscillate";
-
-            document.getElementById("manualButton").className =
-                oscillating ? "" : "active";
-
-            document.getElementById("oscillateButton").className =
-                oscillating ? "active" : "";
-
-            document.getElementById("manualControls").style.display =
-                oscillating ? "none" : "block";
-
-            document.getElementById("oscillateMessage").style.display =
-                oscillating ? "block" : "none";
-
-            sendRequest("/mode?osc=" + oscillating);
+            var osc = mode === "oscillate";
+            document.getElementById("manualButton").className    = osc ? "" : "active";
+            document.getElementById("oscillateButton").className = osc ? "active" : "";
+            document.getElementById("manualControls").style.display    = osc ? "none" : "block";
+            document.getElementById("oscillateMessage").style.display  = osc ? "block" : "none";
+            sendRequest("/mode?osc=" + osc);
         }
 
         function sendMove() {
-            const angle = document.getElementById("angleSlider").value;
-            sendRequest("/move?pos=" + angle);
+            sendRequest("/move?pos=" + document.getElementById("angleSlider").value);
         }
 
         function sendSpeed() {
-            const speed = document.getElementById("speedSlider").value;
-            sendRequest("/speed?value=" + speed);
+            sendRequest("/speed?value=" + document.getElementById("speedSlider").value);
+        }
+
+        /* ---- Update check ---- */
+
+        function stopPolling() {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+
+        function setBusy(busy) {
+            document.getElementById("checkUpdateButton").disabled = busy;
+            document.getElementById("checkUpdateButton").textContent =
+                busy ? "CHECKING\u2026" : "CHECK FOR UPDATE";
         }
 
         /*
-         * Check for a firmware update.
-         *
-         * Step 1 — fetch the current version from the Pico (/version).
-         * Step 2 — fetch the latest version from GitHub via the phone's
-         *          mobile data (raw.githubusercontent.com).
-         * Step 3 — compare and show the result.
-         *
-         * Note: the phone must have mobile data active. When connected to
-         * the Pico's Wi-Fi, iOS (Wi-Fi Assist) and Android (Smart Network
-         * Switch) will route the GitHub request over cellular automatically.
+         * Poll /update-status every 2 seconds until the Pico reports
+         * "done", "error", or "needs_setup".
          */
+        function startPolling() {
+            stopPolling();
+            pollTimer = setInterval(function() {
+                fetch("/update-status", { cache: "no-store" })
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) { handleUpdateState(data); })
+                    .catch(function() {
+                        /* Pico temporarily busy (e.g. HTTPS fetch) — keep polling. */
+                    });
+            }, 2000);
+        }
+
+        function handleUpdateState(data) {
+            var state  = data.state;
+            var result = data.result || {};
+
+            if (state === "connecting") {
+                setUpdateResult("Connecting to Wi-Fi\u2026", "#64748b");
+                return;   // keep polling
+            }
+
+            if (state === "fetching") {
+                setUpdateResult("Fetching update info\u2026", "#64748b");
+                return;   // keep polling
+            }
+
+            if (state === "done") {
+                stopPolling();
+                setBusy(false);
+                document.getElementById("wifiSetup").style.display = "none";
+
+                var current = document.getElementById("versionDisplay")
+                                      .textContent.replace("v", "");
+                var latest  = result.latest || "unknown";
+                var notes   = result.notes  || "";
+
+                if (current === latest) {
+                    setUpdateResult("\u2713 Firmware is up to date (v" + current + ")", "#16803c");
+                } else {
+                    setUpdateResult(
+                        "Update available: v" + latest +
+                        (notes ? " \u2014 " + notes : "") +
+                        "  (installed: v" + current + ")",
+                        "#b45309"
+                    );
+                }
+                return;
+            }
+
+            if (state === "error") {
+                stopPolling();
+                setBusy(false);
+                setUpdateResult(
+                    "\u26a0 " + (result.message || "Update check failed."),
+                    "#b42318"
+                );
+                return;
+            }
+
+            if (state === "needs_setup") {
+                stopPolling();
+                setBusy(false);
+                setUpdateResult("Wi-Fi credentials required.", "#64748b");
+                showWifiSetup();
+                return;
+            }
+
+            // "connecting" / "fetching" / "pending" — still working, keep polling.
+        }
+
         function checkUpdate() {
-            const btn    = document.getElementById("checkUpdateButton");
-            const result = document.getElementById("updateResult");
+            setBusy(true);
+            setUpdateResult("", "");
+            showError("");
 
-            btn.disabled    = true;
-            btn.textContent = "CHECKING\u2026";
-            result.textContent  = "";
-            result.style.color  = "#64748b";
-
-            const GITHUB_VERSION_URL =
-                "https://raw.githubusercontent.com/Pagem02/FlexBreeze/main/Latest/version.txt";
-
-            fetch("/version", { cache: "no-store" })
-                .then(function(resp) {
-                    if (!resp.ok) { throw new Error("version endpoint error"); }
-                    return resp.json();
-                })
+            fetch("/check-update", { cache: "no-store" })
+                .then(function(r) { return r.json(); })
                 .then(function(data) {
-                    const current = data.version;
-
-                    // Update the version badge at the top of the page.
-                    document.getElementById("versionDisplay").textContent =
-                        "v" + current;
-
-                    return fetch(GITHUB_VERSION_URL, { cache: "no-store" })
-                        .then(function(ghResp) {
-                            if (!ghResp.ok) { throw new Error("github fetch error"); }
-                            return ghResp.text();
-                        })
-                        .then(function(text) {
-                            return { current: current, latest: text.trim() };
-                        });
-                })
-                .then(function(versions) {
-                    if (versions.current === versions.latest) {
-                        result.textContent = "\u2713 Firmware is up to date (v" + versions.current + ")";
-                        result.style.color = "#16803c";
+                    if (data.state === "needs_setup") {
+                        setBusy(false);
+                        setUpdateResult("Wi-Fi credentials required.", "#64748b");
+                        showWifiSetup();
                     } else {
-                        result.textContent =
-                            "Update available: v" + versions.latest +
-                            "  (installed: v" + versions.current + ")";
-                        result.style.color = "#b45309";
+                        // "connecting" — Pico has saved credentials and is working.
+                        setUpdateResult("Connecting to Wi-Fi\u2026", "#64748b");
+                        startPolling();
                     }
                 })
                 .catch(function() {
-                    result.textContent = "Check failed \u2014 ensure mobile data is active.";
-                    result.style.color = "#b42318";
-                })
-                .finally(function() {
-                    btn.disabled    = false;
-                    btn.textContent = "CHECK FOR UPDATE";
+                    setBusy(false);
+                    showError("Connection lost. Reconnect to FlexBreezeOss.");
                 });
         }
+
+        /* ---- Wi-Fi setup ---- */
+
+        function showWifiSetup() {
+            document.getElementById("wifiSetup").style.display = "block";
+            scanNetworks();
+        }
+
+        function scanNetworks() {
+            var sel = document.getElementById("networkSelect");
+            sel.innerHTML = "<option value=''>Scanning\u2026</option>";
+
+            fetch("/scan-wifi", { cache: "no-store" })
+                .then(function(r) { return r.json(); })
+                .then(function(nets) {
+                    sel.innerHTML = "";
+
+                    if (!nets.length) {
+                        sel.innerHTML = "<option value=''>No networks found</option>";
+                        return;
+                    }
+
+                    nets.forEach(function(n) {
+                        var opt   = document.createElement("option");
+                        opt.value = n.ssid;
+
+                        // Signal strength label based on RSSI.
+                        var signal = n.rssi >= -60 ? "Strong"
+                                   : n.rssi >= -75 ? "Good"
+                                   : "Weak";
+
+                        opt.textContent = n.ssid + " (" + signal + ")";
+                        sel.appendChild(opt);
+                    });
+                })
+                .catch(function() {
+                    sel.innerHTML = "<option value=''>Scan failed — try again</option>";
+                });
+        }
+
+        function saveWifiAndCheck() {
+            var ssid     = document.getElementById("networkSelect").value.trim();
+            var password = document.getElementById("wifiPassword").value;
+
+            if (!ssid) {
+                setUpdateResult("Please select a network.", "#b42318");
+                return;
+            }
+
+            var btn = document.getElementById("connectButton");
+            btn.disabled    = true;
+            btn.textContent = "CONNECTING\u2026";
+            setUpdateResult("Saving credentials\u2026", "#64748b");
+            setBusy(true);
+
+            var url = "/save-wifi?ssid=" + encodeURIComponent(ssid) +
+                      "&pass=" + encodeURIComponent(password);
+
+            fetch(url, { cache: "no-store" })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    btn.disabled    = false;
+                    btn.textContent = "CONNECT & CHECK UPDATE";
+
+                    if (data.state === "error") {
+                        setBusy(false);
+                        setUpdateResult(
+                            (data.result && data.result.message) || "Save failed.",
+                            "#b42318"
+                        );
+                        return;
+                    }
+
+                    // Pico saved credentials and is now connecting.
+                    setUpdateResult("Connecting to Wi-Fi\u2026", "#64748b");
+                    startPolling();
+                })
+                .catch(function() {
+                    btn.disabled    = false;
+                    btn.textContent = "CONNECT & CHECK UPDATE";
+                    setBusy(false);
+                    showError("Connection lost. Reconnect to FlexBreezeOss.");
+                });
+        }
+
+        /* ---- On load: fetch current version from Pico ---- */
+        fetch("/version", { cache: "no-store" })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                document.getElementById("versionDisplay").textContent = "v" + d.version;
+            })
+            .catch(function() {});
     </script>
 <script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"f0f03d0605bf45f1a3b17cf7d5e6861f"}' crossorigin="anonymous"></script>
 </body>
