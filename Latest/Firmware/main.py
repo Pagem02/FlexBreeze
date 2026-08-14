@@ -48,7 +48,9 @@ LED_DUTY_OFF  = 65535   # fully off
 #   Yellow (1,1,0) — access point starting
 #   Green  (0,1,0) — ready / manual hold mode
 #   Blue   (0,0,1) — oscillating
+#   White  (1,1,1) — checking for update (connecting or fetching)
 #   Purple (1,0,1) — error (AP failed to start)
+#   Cyan   (0,1,1) — boot LED sequence only
 # ====
 
 def set_led(red, green, blue):
@@ -164,18 +166,22 @@ def motor_update():
     global current_step, target_step, sequence_index
     global oscillation_direction, last_step_time
 
-    if oscillate:
+    # LED reflects current operational state.
+    if checking_update:
+        set_led(1, 1, 1)   # White: checking for update.
+    elif oscillate:
         set_led(0, 0, 1)   # Blue: oscillating.
+    else:
+        set_led(0, 1, 0)   # Green: manual / hold.
 
+    # Keep oscillation target up to date when in auto mode.
+    if oscillate:
         if current_step >= STEPS_OSC:
             oscillation_direction = -1
         elif current_step <= 0:
             oscillation_direction = 1
 
         target_step = STEPS_OSC if oscillation_direction == 1 else 0
-
-    else:
-        set_led(0, 1, 0)   # Green: manual / hold.
 
     if current_step == target_step:
         return
@@ -189,6 +195,20 @@ def motor_update():
     sequence_index = (sequence_index + direction) % len(SEQUENCE)
     set_motor_outputs(sequence_index)
     last_step_time = now
+
+
+def motor_sleep_ms(duration_ms):
+    """
+    Non-blocking replacement for time.sleep_ms() used inside run_update_check.
+    Keeps the motor stepping, DNS answering, and web requests handled during
+    waits so the phone stays connected to the AP and the UI stays responsive.
+    """
+    deadline = time.ticks_add(time.ticks_ms(), duration_ms)
+    while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+        motor_update()
+        handle_dns()
+        handle_web_request()
+        time.sleep_ms(1)
 
 
 # ====
@@ -253,22 +273,155 @@ def parse_query(path):
 #   fetching    — connected; downloading update.json from GitHub
 #   done        — check complete; result is in update_result
 #   error       — something failed; message is in update_result
+#
+# LED colour guide (full set):
+#   Red    (1,0,0) — booting
+#   Yellow (1,1,0) — AP starting
+#   Green  (0,1,0) — ready / manual hold
+#   Blue   (0,0,1) — oscillating
+#   White  (1,1,1) — checking for update (Wi-Fi connecting or fetching)
+#   Purple (1,0,1) — error
 # ====
 
-update_state  = "idle"
-update_result = {}
-update_pending = False
+update_state    = "idle"
+update_result   = {}
+update_pending  = False
+checking_update = False   # True while run_update_check() is running.
+
+
+def _dns_query(hostname, dns_ip, sta_ip):
+    """
+    Resolve hostname via a raw UDP DNS query sent directly to dns_ip:53.
+    The socket is bound to sta_ip so the packet routes out the STA
+    interface rather than the AP interface (critical in AP+STA mode).
+    Returns the first IPv4 address string, or None on failure.
+    """
+    qname = b""
+    for label in hostname.encode().split(b"."):
+        qname += bytes([len(label)]) + label
+    qname += b"\x00"
+
+    packet = (
+        b"\xab\xcd"    # transaction ID
+        b"\x01\x00"    # flags: standard query, recursion desired
+        b"\x00\x01"    # QDCOUNT = 1
+        b"\x00\x00"    # ANCOUNT = 0
+        b"\x00\x00"    # NSCOUNT = 0
+        b"\x00\x00"    # ARCOUNT = 0
+        + qname
+        + b"\x00\x01"  # QTYPE  = A
+        + b"\x00\x01"  # QCLASS = IN
+    )
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(5)
+    try:
+        # Bind to the STA IP so the OS routes via the STA interface, not AP.
+        s.bind((sta_ip, 0))
+        s.sendto(packet, (dns_ip, 53))
+        resp = s.recv(512)
+    except Exception as e:
+        print("[dns] query failed:", e)
+        return None
+    finally:
+        try:
+            s.close()
+        except:
+            pass
+
+    if len(resp) < 12:
+        return None
+    ancount = (resp[6] << 8) | resp[7]
+    if ancount == 0:
+        print("[dns] no answers for", hostname)
+        return None
+
+    # Skip header (12 bytes) + question section
+    pos = 12
+    while pos < len(resp):
+        ln = resp[pos]
+        if ln == 0:
+            pos += 1
+            break
+        if (ln & 0xC0) == 0xC0:
+            pos += 2
+            break
+        pos += 1 + ln
+    pos += 4   # skip QTYPE + QCLASS
+
+    # Walk answer records looking for the first A record
+    for _ in range(ancount):
+        if pos >= len(resp):
+            break
+        if (resp[pos] & 0xC0) == 0xC0:
+            pos += 2
+        else:
+            while pos < len(resp) and resp[pos] != 0:
+                pos += resp[pos] + 1
+            pos += 1
+        if pos + 10 > len(resp):
+            break
+        rtype = (resp[pos]     << 8) | resp[pos + 1]
+        rdlen = (resp[pos + 8] << 8) | resp[pos + 9]
+        pos  += 10
+        if rtype == 1 and rdlen == 4 and pos + 4 <= len(resp):
+            return "{}.{}.{}.{}".format(
+                resp[pos], resp[pos + 1], resp[pos + 2], resp[pos + 3]
+            )
+        pos += rdlen
+
+    print("[dns] no A record found for", hostname)
+    return None
+
+
+def _https_get_json(host_ip, hostname, path, sta_ip):
+    """
+    Open a TLS connection to host_ip:443 and return the parsed JSON body.
+    The socket is bound to sta_ip so traffic routes via the STA interface.
+    HTTP/1.0 is used so the server closes the connection after the body —
+    no chunked-encoding parsing required.
+    """
+    import ssl as _ssl
+
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.settimeout(20)
+    try:
+        # Bind to STA interface before connecting.
+        raw.bind((sta_ip, 0))
+        raw.connect((host_ip, 443))
+        tls = _ssl.wrap_socket(raw, server_hostname=hostname)
+        tls.write((
+            "GET " + path + " HTTP/1.0\r\n"
+            "Host: " + hostname + "\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        ).encode())
+
+        buf = bytearray()
+        while True:
+            chunk = tls.read(512)
+            if not chunk:
+                break
+            buf.extend(chunk)
+
+        sep = buf.find(b"\r\n\r\n")
+        if sep < 0:
+            raise ValueError("no HTTP header separator in response")
+        return json.loads(buf[sep + 4:])
+    finally:
+        try:
+            raw.close()
+        except:
+            pass
 
 
 def scan_networks():
     """
-    Activate STA interface, scan for visible Wi-Fi networks, and return a
-    list of {ssid, rssi} dicts sorted strongest first.
-    STA is left active so a follow-up connect() call does not need to
-    re-activate it.
+    Scan for visible Wi-Fi networks and return a list of {ssid, rssi} dicts
+    sorted strongest first.  STA is permanently active from boot so no
+    active() call is needed here.
     """
     sta = network.WLAN(network.STA_IF)
-    sta.active(True)
     try:
         raw = sta.scan()
         seen = set()
@@ -292,35 +445,39 @@ def run_update_check():
     Connect to saved home Wi-Fi (STA mode) while keeping the Pico AP active,
     fetch update.json from GitHub, then disconnect.
 
-    Robustness features:
-    - STA interface is fully torn down and restarted before each attempt so
-      stale state from a previous failed connect cannot block a new one.
-    - Status is polled every 100 ms; definitive failures (wrong password,
-      AP not found) cause an early exit rather than waiting out the full
-      timeout — giving a specific, helpful error message straight away.
-    - Up to MAX_ATTEMPTS connection attempts are made before giving up.
-    - Motor, DNS, and web handlers run during every wait loop so the phone
-      stays connected to the AP and the UI stays responsive throughout.
-    - The HTTPS fetch timeout is generous to allow for a slow DNS lookup,
-      TLS handshake, and data transfer over a loaded home router.
+    CYW43 / MicroPython AP+STA rules enforced here:
+    - STA is activated once at boot and never toggled.  Calling
+      sta.active(False) while the AP is running disrupts the shared CYW43
+      radio and kills the AP.
+    - Every individual WiFi driver call (sta.status, sta.isconnected,
+      sta.connect, sta.disconnect) is wrapped in its own try/except so a
+      driver OSError can never silently propagate to the generic handler.
+    - The connect section and the fetch section each have their own
+      try/except so the error message always indicates WHERE the failure
+      occurred, making field diagnosis possible without Thonny.
+    - urequests is imported before connecting to free as much RAM as
+      possible for the TLS stack during the HTTPS fetch.
+    - motor_sleep_ms() keeps motor / DNS / web alive during all waits.
     """
-    global update_state, update_result
+    global update_state, update_result, checking_update
 
-    # MicroPython Pico W STA status codes.
-    STAT_GOT_IP        =  3
-    STAT_CONNECTING    =  1
-    STAT_IDLE          =  0
-    STAT_CONNECT_FAIL  = -1
-    STAT_NO_AP_FOUND   = -2
-    STAT_WRONG_PASS    = -3
+    checking_update = True
 
-    # Two attempts, 25 seconds each.  Total worst-case wait = ~52 seconds.
-    MAX_ATTEMPTS      = 2
-    CONNECT_TIMEOUT_S = 25
+    STAT_GOT_IP       =  3
+    STAT_CONNECTING   =  1
+    STAT_IDLE         =  0
+    STAT_CONNECT_FAIL = -1
+    STAT_NO_AP_FOUND  = -2
+    STAT_WRONG_PASS   = -3
+    DEFINITIVE_FAILS  = (STAT_WRONG_PASS, STAT_NO_AP_FOUND, STAT_CONNECT_FAIL)
+
+    MAX_ATTEMPTS      = 3
+    CONNECT_TIMEOUT_S = 30
 
     sta = network.WLAN(network.STA_IF)
 
     try:
+        # ---- Check saved credentials ----
         config = load_config()
         if not config or not config.get("ssid"):
             update_state = "needs_setup"
@@ -329,127 +486,288 @@ def run_update_check():
         ssid     = config["ssid"]
         password = config.get("password", "")
 
+        # urequests is NOT used — we do our own DNS + raw TLS fetch.
+        # (urequests calls socket.getaddrinfo() which in AP+STA mode
+        # uses lwIP's internal resolver; that resolver queries our own
+        # captive-portal DNS server and gets SERVFAIL for GitHub.)
+
+        # ---- Connect to home Wi-Fi ----
         update_state = "connecting"
         connected    = False
+        last_status  = STAT_IDLE
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
+            print("[update] attempt", attempt, "/ connecting to:", ssid)
 
-            # ---- Full STA reset before each attempt ----
-            # Ensures no stale connection state carries over.
+            # Cleanly end any previous session.
             try:
-                if sta.isconnected():
-                    sta.disconnect()
-                    time.sleep_ms(500)
-                sta.active(False)
-                time.sleep_ms(400)
+                sta.disconnect()
             except:
                 pass
 
-            sta.active(True)
-            time.sleep_ms(500)   # Let the radio settle after activation.
+            # Wait for driver to settle at IDLE before issuing connect().
+            # Calling connect() while the driver is still in a failure
+            # state from a previous attempt can cause it to fail instantly.
+            idle_deadline = time.ticks_add(time.ticks_ms(), 3000)
+            while time.ticks_diff(idle_deadline, time.ticks_ms()) > 0:
+                try:
+                    s = sta.status()
+                except:
+                    s = STAT_IDLE
+                if s in (STAT_IDLE,) + DEFINITIVE_FAILS:
+                    break
+                motor_sleep_ms(100)
 
-            sta.connect(ssid, password)
-
-            # ---- Wait loop — up to CONNECT_TIMEOUT_S seconds ----
-            deadline = time.ticks_add(time.ticks_ms(), CONNECT_TIMEOUT_S * 1000)
+            # Issue connect().  On Pico W this can raise OSError(-2)
+            # immediately when the SSID is not currently visible.
             last_status = STAT_CONNECTING
+            try:
+                sta.connect(ssid, password)
+            except OSError as ce:
+                code = ce.args[0] if ce.args else 0
+                last_status = {
+                    -2: STAT_NO_AP_FOUND,
+                    -3: STAT_WRONG_PASS,
+                }.get(code, STAT_CONNECT_FAIL)
+                print("[update] connect() raised OSError", code,
+                      "→ mapped status", last_status)
 
-            while time.ticks_diff(deadline, time.ticks_ms()) > 0:
-                motor_update()
-                handle_dns()
-                handle_web_request()
+            # Poll until connected or definitively failed.
+            if last_status == STAT_CONNECTING:
+                deadline = time.ticks_add(time.ticks_ms(),
+                                          CONNECT_TIMEOUT_S * 1000)
+                while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+                    try:
+                        if sta.isconnected():
+                            connected   = True
+                            last_status = STAT_GOT_IP
+                            break
+                        s = sta.status()
+                    except OSError as se:
+                        # Driver error during polling — treat as a failure.
+                        s = se.args[0] if se.args else STAT_CONNECT_FAIL
+                    except:
+                        s = STAT_CONNECT_FAIL
 
-                if sta.isconnected():
-                    connected   = True
-                    last_status = STAT_GOT_IP
-                    break
+                    if s in DEFINITIVE_FAILS:
+                        last_status = s
+                        break
 
-                last_status = sta.status()
+                    motor_sleep_ms(200)
 
-                # Definitive failures — the driver already gave up.
-                # No point running out the full timeout.
-                if last_status in (STAT_WRONG_PASS,
-                                   STAT_NO_AP_FOUND,
-                                   STAT_CONNECT_FAIL):
-                    break
-
-                time.sleep_ms(100)
+            print("[update] attempt", attempt, "done —",
+                  "CONNECTED" if connected else "failed, status=" + str(last_status))
 
             if connected:
                 break
 
-            # ---- Build a helpful message for the last failed attempt ----
-            if attempt == MAX_ATTEMPTS:
-                if last_status == STAT_WRONG_PASS:
-                    msg = (
-                        "Wrong password for \"" + ssid + "\". "
-                        "Please re-enter your Wi-Fi password and try again."
-                    )
-                elif last_status == STAT_NO_AP_FOUND:
-                    msg = (
-                        "Network \"" + ssid + "\" not found. "
-                        "Move FlexBreeze closer to your router and try again."
-                    )
-                elif last_status == STAT_CONNECT_FAIL:
-                    msg = (
-                        "Connection to \"" + ssid + "\" failed. "
-                        "Check your router is working and try again."
-                    )
-                else:
-                    msg = (
-                        "Could not connect to \"" + ssid + "\" "
-                        "after " + str(MAX_ATTEMPTS) + " attempts. "
-                        "Check the password or move closer to your router."
-                    )
-                update_state  = "error"
-                update_result = {"message": msg}
-                return
+            if attempt < MAX_ATTEMPTS:
+                motor_sleep_ms(2000)
 
-            # Brief pause before retrying.
-            time.sleep_ms(1000)
+        # ---- Build connection error message if still not connected ----
+        if not connected:
+            if last_status == STAT_WRONG_PASS:
+                msg = (
+                    'Wrong password for "' + ssid + '". '
+                    'Please re-enter your Wi-Fi password and try again.'
+                )
+            elif last_status == STAT_NO_AP_FOUND:
+                msg = (
+                    'Network "' + ssid + '" not found. '
+                    'Move FlexBreeze closer to your router and try again.'
+                )
+            elif last_status == STAT_CONNECT_FAIL:
+                msg = (
+                    'Connection to "' + ssid + '" failed. '
+                    'Check your router is working and try again.'
+                )
+            else:
+                msg = (
+                    'Could not connect to "' + ssid + '" '
+                    '(code ' + str(last_status) + '). '
+                    'Check your Wi-Fi password and router, then try again.'
+                )
+            update_state  = "error"
+            update_result = {"message": msg}
+            return
 
         # ---- Fetch update.json from GitHub ----
+        # Motor pauses during the TLS fetch — acceptable per design.
+        # We:
+        #   1. Let the STA routing table settle briefly (motor still runs)
+        #   2. Do our OWN DNS query to the STA's DNS server — this avoids
+        #      lwIP's internal resolver routing the query through the AP
+        #      interface and hitting our own captive-portal DNS (which
+        #      returns SERVFAIL for GitHub hostnames).
+        #   3. Open a raw TCP+TLS socket to the resolved IP, send an
+        #      HTTP/1.0 GET, and parse the JSON body.
         update_state = "fetching"
         gc.collect()
-
-        try:
-            import urequests
-        except ImportError:
-            import requests as urequests
-
-        # Generous timeout: allows for slow DNS, TLS handshake, and
-        # data transfer on a loaded home network.
-        resp = urequests.get(
-            "https://raw.githubusercontent.com/Pagem02/FlexBreeze/main/Latest/update.json",
-            timeout=20
-        )
-        data = resp.json()
-        resp.close()
-        del resp
+        motor_sleep_ms(800)
         gc.collect()
 
+        GITHUB_HOST = "raw.githubusercontent.com"
+        GITHUB_PATH = "/Pagem02/FlexBreeze/main/Latest/update.json"
+
+        sta_cfg = sta.ifconfig()
+        sta_ip  = sta_cfg[0]
+        gw_ip   = sta_cfg[2]
+        dns_ip  = sta_cfg[3]
+        print("[update] STA ifconfig:", sta_cfg)
+
+        # ---- Wait for the default route to be installed in lwIP ----
+        # sta.isconnected() returns True when DHCP assigns the IP, but lwIP
+        # may not have written the default gateway route (0.0.0.0/0) yet.
+        # Until it has, any packet to a non-local address is immediately
+        # rejected with EHOSTUNREACH (errno 113).
+        #
+        # IMPORTANT: the probe must target an EXTERNAL IP (not the gateway).
+        # The gateway is on the local subnet and is reachable even without a
+        # default route, so probing it never actually waits for the route.
+        # 8.8.8.8 (Google DNS) is definitively external on any home network.
+        # sendto() succeeds as soon as lwIP can queue the packet — i.e. the
+        # moment the default route exists — so EHOSTUNREACH is the only error
+        # that means "not ready yet".  Any other result means ready.
+        print("[update] waiting for default route (probing 8.8.8.8)")
+        route_ready = False
+        route_deadline = time.ticks_add(time.ticks_ms(), 10000)
+        while time.ticks_diff(route_deadline, time.ticks_ms()) > 0:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe.settimeout(1)
+            try:
+                probe.bind((sta_ip, 0))
+                probe.sendto(b"", ("8.8.8.8", 53))
+                route_ready = True
+                break
+            except OSError as pe:
+                if pe.args[0] == 113:   # EHOSTUNREACH — route not ready yet
+                    motor_sleep_ms(300)
+                else:
+                    # Any other OSError (ETIMEDOUT etc.) means the packet was
+                    # at least queued — default route is present.
+                    route_ready = True
+                    break
+            except:
+                route_ready = True
+                break
+            finally:
+                try:
+                    probe.close()
+                except:
+                    pass
+
+        if not route_ready:
+            update_state  = "error"
+            update_result = {
+                "message": (
+                    'Connected to "' + ssid + '" but the network route '
+                    'did not become ready in time. '
+                    'Try again — if this keeps happening, restart FlexBreeze.'
+                )
+            }
+            return
+
+        print("[update] route ready")
+
+        # ---- DNS: query the gateway first ----
+        # The gateway (e.g. 10.0.0.1) is on the local subnet — reachable
+        # without a default route — and home routers always forward DNS.
+        # We only fall back to the configured DNS server (e.g. 1.1.1.1)
+        # if the gateway doesn't answer, since that may also need routing.
+        print("[update] resolving", GITHUB_HOST, "via gateway", gw_ip)
+        github_ip = _dns_query(GITHUB_HOST, gw_ip, sta_ip)
+
+        if not github_ip and dns_ip != gw_ip:
+            print("[update] gateway DNS failed, retrying via", dns_ip)
+            github_ip = _dns_query(GITHUB_HOST, dns_ip, sta_ip)
+
+        print("[update] resolved to:", github_ip)
+
+        if not github_ip:
+            update_state  = "error"
+            update_result = {
+                "message": (
+                    'Connected to "' + ssid + '" but could not resolve '
+                    'the update server hostname. '
+                    'Check your router has internet access and try again.'
+                )
+            }
+            return
+
+        print("[update] fetching from", GITHUB_HOST, "at", github_ip)
+        try:
+            data = _https_get_json(github_ip, GITHUB_HOST, GITHUB_PATH, sta_ip)
+        except OSError as fe:
+            code = fe.args[0] if fe.args else 0
+            print("[update] HTTPS fetch OSError:", code)
+            update_state  = "error"
+            update_result = {
+                "message": (
+                    'Connected to "' + ssid + '" but could not download '
+                    'the update (error ' + str(code) + '). '
+                    'Check your router has internet access and try again.'
+                )
+            }
+            return
+        except Exception as fe:
+            print("[update] HTTPS fetch error:", fe)
+            update_state  = "error"
+            update_result = {
+                "message": (
+                    'Connected to "' + ssid + '" but update download '
+                    'failed: ' + str(fe)
+                )
+            }
+            return
+
+        gc.collect()
         update_result = {
-            "latest" : data.get("version", "unknown"),
-            "notes"  : data.get("notes", "")
+            "latest": data.get("version", "unknown"),
+            "notes":  data.get("notes", "")
         }
         update_state = "done"
+        print("[update] done — latest version:", update_result["latest"])
 
     except Exception as exc:
+        # Last-resort handler.  The state variable tells us where it was.
+        print("[update] unexpected error at state=" + update_state + ":", exc)
         update_state  = "error"
-        update_result = {"message": str(exc)}
+        update_result = {
+            "message": (
+                "Unexpected error during " + update_state +
+                ": " + str(type(exc).__name__) + ": " + str(exc)
+            )
+        }
 
     finally:
-        # Always fully tear down STA so the AP is the only active interface.
+        checking_update = False
         try:
             sta.disconnect()
         except:
             pass
-        try:
-            sta.active(False)
-        except:
-            pass
+        # Do NOT call sta.active(False) — STA must stay permanently active.
+        # Toggling it while the AP is running disrupts the shared CYW43 radio.
         gc.collect()
 
+
+# ====
+# Boot LED sequence — flash every colour to confirm LED health.
+# ====
+
+for _r, _g, _b in (
+    (1, 0, 0),  # Red
+    (1, 1, 0),  # Yellow
+    (0, 1, 0),  # Green
+    (0, 1, 1),  # Cyan
+    (0, 0, 1),  # Blue
+    (1, 0, 1),  # Purple
+    (1, 1, 1),  # White
+):
+    set_led(_r, _g, _b)
+    time.sleep_ms(200)
+
+set_led(0, 0, 0)   # Brief off — end of sequence.
+time.sleep_ms(100)
 
 # ====
 # Access point setup
@@ -469,6 +787,13 @@ if not ap.active():
     set_led(1, 0, 1)   # Purple: AP failed.
     clear_gpio()
     raise RuntimeError("Access point failed to start")
+
+# Activate STA now and leave it permanently active.
+# The CYW43 chip shares one radio between AP and STA — calling
+# sta.active(False) at any point while the AP is running would disrupt
+# the shared radio.  By activating STA here once, run_update_check()
+# only needs sta.disconnect() / sta.connect() and never active().
+network.WLAN(network.STA_IF).active(True)
 
 PICO_IP  = ap.ifconfig()[0]
 ip_bytes = bytes(map(int, PICO_IP.split(".")))
